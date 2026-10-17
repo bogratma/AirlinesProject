@@ -49,3 +49,4 @@ def drop_columns(df, columns, output_path):
     print(f"Файл перезаписан: {output_path}")
 
   return df
+
