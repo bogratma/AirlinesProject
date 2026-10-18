@@ -4,8 +4,7 @@ import xml.etree.ElementTree as ET
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-INPUT_PATH = r"C:\Users\Айдын\Универ\DS\Airlines-All\Airlines\PointzAggregator-AirlinesData.xml"
-OUTPUT_PATH = r"C:\Users\Айдын\PycharmProjects\AirlinesProject\process\xml_data.parquet"
+
 BATCH_SIZE = 100_000
 
 SCHEMA = pa.schema([
@@ -62,10 +61,10 @@ def user_to_rows(user):
             }
 
 
-def main():
+def parse_xml(xml_path, output_path):
     rows = []
     total = 0
-    writer = pq.ParquetWriter(OUTPUT_PATH, SCHEMA, compression="snappy")
+    writer = pq.ParquetWriter(output_path, SCHEMA, compression="snappy")
 
     def flush():
         nonlocal rows, total
@@ -75,7 +74,7 @@ def main():
             rows = []
 
     try:
-        context = ET.iterparse(INPUT_PATH, events=("start", "end"))
+        context = ET.iterparse(xml_path, events=("start", "end"))
         _, root = next(context)  # корневой элемент, чтобы чистить память
 
         for event, elem in context:
@@ -88,8 +87,4 @@ def main():
     finally:
         writer.close()
 
-    print(f"Готово: записано {total} строк в {OUTPUT_PATH}")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"Готово: записано {total} строк в {output_path}")

@@ -8,8 +8,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pymupdf
 
-PDF_PATH = r"C:\Users\Айдын\Универ\DS\Airlines-All\Airlines\Skyteam_Timetable.pdf"
-OUT_DIR = r"C:\Users\Айдын\PycharmProjects\AirlinesProject\process"
 
 FIRST_PAGE = 4
 LAST_PAGE = None
@@ -155,19 +153,15 @@ def dedup(raw, out):
        .sink_parquet(out))
 
 
-def main():
-    out = Path(OUT_DIR)
+def parse_pdf(pdf_path,output_path):
+    out = Path(output_path)
     out.mkdir(parents=True, exist_ok=True)
     raw, sched = out / RAW_NAME, out / SCHEDULE_NAME
 
-    doc = parse(PDF_PATH, raw, out / UNMATCHED_NAME, FIRST_PAGE, LAST_PAGE, BATCH_PAGES)
+    doc = parse(pdf_path, raw, out / UNMATCHED_NAME, FIRST_PAGE, LAST_PAGE, BATCH_PAGES)
     dedup(raw, sched)
     parse_aircraft(doc).write_parquet(out / AIRCRAFT_NAME)
 
     n_raw = pl.scan_parquet(raw).select(pl.len()).collect().item()
     n_ded = pl.scan_parquet(sched).select(pl.len()).collect().item()
     print(f"строк до дедупликации: {n_raw}, после: {n_ded}")
-
-
-if __name__ == "__main__":
-    main()

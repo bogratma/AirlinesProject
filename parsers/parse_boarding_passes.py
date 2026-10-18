@@ -1,11 +1,4 @@
-"""
-Примеры:
-    python parse_boarding_passes.py ./books
-    python parse_boarding_passes.py archive.zip -o passes.parquet --workers 8
-    python parse_boarding_passes.py ./books --keep-constant     # не выбрасывать константные колонки
 
-Зависимости: pandas, openpyxl, pyarrow
-"""
 from __future__ import annotations
 
 import argparse
@@ -21,12 +14,11 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
 
-#Данные на талоне
 CELLS = {
     "sequence": "H1",
-    "title": "A3",               # MR / MRS
+    "title": "A3",
     "passenger_name_raw": "B3",
-    "ff_raw": "F3",              # бонусная карта
+    "ff_raw": "F3",
     "travel_class": "H3",
     "flight_no": "A5",
     "from_city": "D5",
@@ -42,7 +34,6 @@ CELLS = {
     "ticket_no": "E13",
 }
 
-#Проверка корректности полей, если одна не соответствует, уходит в ошибку
 MARKERS = {
     "A1": "BOARDING PASS",
     "F1": "SEQUENCE:",
@@ -52,7 +43,6 @@ MARKERS = {
     "D13": "E-TICKET",
 }
 
-# Колонки, которые выбрасываем, если во всём датасете они константны/пусты.
 CONSTANT_CANDIDATES = ["gate", "seat", "operator_note"]
 
 GENDER = {"MR": "M", "MRS": "F", "MS": "F", "MISS": "F"}
@@ -84,7 +74,6 @@ def _as_time_str(v):
 
 
 def _as_digits(v, width):
-    """Номер билета должен остаться строкой (бывают ведущие нули)."""
     if v is None:
         return None
     if isinstance(v, float):
@@ -95,10 +84,8 @@ def _as_digits(v, width):
 def add_quality_flags(df):
     df = df.copy()
 
-    # 1) тот же номер билета встречается в нескольких строках
     df["dup_ticket"] = df["ticket_no"].duplicated(keep=False)
 
-    # 2) IATA-код, у которого в датасете больше одного города
     air = pd.concat([
         df[["from_iata", "from_city"]].set_axis(["iata", "city"], axis=1),
         df[["to_iata", "to_city"]].set_axis(["iata", "city"], axis=1),
@@ -108,7 +95,6 @@ def add_quality_flags(df):
     df["iata_conflict"] = (df["from_iata"].astype(str).isin(bad)
                            | df["to_iata"].astype(str).isin(bad))
 
-    # 3) человек (по name_key) в один день на нескольких разных рейсах
     cnt = df.groupby(["name_key", "flight_date"], observed=True)["flight_no"].transform("nunique")
     df["same_day_multi_flight"] = cnt.fillna(0) > 1
 
@@ -131,7 +117,6 @@ def parse_sheet(ws):
 
 
 def parse_workbook(path: str):
-    """Возвращает (records, errors) для одной книги."""
     records, errors = [], []
     fname = Path(path).name
     try:
@@ -155,12 +140,6 @@ def parse_workbook(path: str):
 
 
 def _name_key(raw):
-    """Ключ для сопоставления одного человека между рейсами.
-
-    Порядок слов в именах нестабилен ("NOSOVA AMINA" / "AMINA NOSOVA"), встречаются
-    инициалы и апострофы ("MARSEL' NOSOV"), поэтому: апострофы убираем, инициалы
-    (токены из 1 буквы) выбрасываем, остальные токены сортируем.
-    """
     if not isinstance(raw, str):
         return None
     s = re.sub(r"[’'`]", "", raw.upper())
@@ -178,7 +157,6 @@ def _initials(raw):
 
 def build_dataframe(records):
     df = pd.DataFrame.from_records(records)
-
     df["sequence"] = pd.to_numeric(df["sequence"], errors="coerce").astype("Int16")
     df["flight_date"] = pd.to_datetime(df["flight_date"], format="%Y-%m-%d", errors="coerce")
     df["departure_dt"] = pd.to_datetime(
@@ -186,10 +164,7 @@ def build_dataframe(records):
         format="%Y-%m-%d %H:%M",
         errors="coerce",
     )
-
     df["gender"] = df["title"].str.upper().map(GENDER)
-
-    # бонусная карта: "KE 797536277" -> программа "KE" + номер
     ff = df["ff_raw"].str.extract(r"^\s*([A-Z0-9]{2})\s*[-\s]\s*(\d+)\s*$")
     df["ff_program"] = ff[0]
     df["ff_number"] = ff[1]
@@ -239,8 +214,6 @@ def quality_report(df):
     dup_t = df["ticket_no"].duplicated(keep=False).sum()
     dup_p = df.duplicated(subset=["pnr", "ticket_no", "flight_no", "flight_date"], keep=False).sum()
     print(f"дубликаты номера билета: {dup_t}, полные дубликаты талонов: {dup_p}")
-
-    # один IATA-код -> несколько названий городов = подозрительно
     air = pd.concat([
         df[["from_iata", "from_city"]].set_axis(["iata", "city"], axis=1),
         df[["to_iata", "to_city"]].set_axis(["iata", "city"], axis=1),
