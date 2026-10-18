@@ -225,7 +225,6 @@ def quality_report(df):
         for code in bad.index:
             print(f"  {code}: {sorted(air.loc[air.iata == code, 'city'].unique())}")
 
-    # один человек (name_key) на разных рейсах в один день
     multi = (df.dropna(subset=["name_key"])
                .groupby(["name_key", "flight_date"], observed=True)["flight_no"].nunique())
     print(f"пар (имя, день) с >1 рейсом: {(multi > 1).sum()}  (могут быть однофамильцы)")
@@ -237,7 +236,7 @@ def collect_files(root: Path):
     return sorted(files)
 
 
-def main():
+def parse_zip():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help="папка с .xlsx (рекурсивно) или .zip-архив")
     ap.add_argument("-o", "--output", default="boarding_passes.parquet")

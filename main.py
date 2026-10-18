@@ -25,6 +25,9 @@ parquet_csv_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_csv
 pdf_path = r'C:\Users\Vladislav\Desktop\Airlines\Skyteam_Timetable.pdf'
 parquet_pdf_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_pdf.parquet'
 
+zip_path = r'C:\Users\Vladislav\Desktop\Airlines\YourBoardingPassDotAero.zip'
+parquet_zip_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_zip.parquet'
+
 
 df_json = parse_json(json_path, parquet_json_path)
 df_tab = parse_tab(tab_path, parquet_tab_path)
@@ -32,4 +35,4 @@ df_yaml = parse_yaml(yaml_path, parquet_yaml_path)
 df_xml = parse_xml(xml_path, parquet_xml_path)
 df_csv = parse_csv(csv_path, parquet_csv_path)
 df_pdf = parse_pdf(pdf_path,parquet_pdf_path)
-
+df_zip = par

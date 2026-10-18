@@ -58,7 +58,7 @@ def _user_to_rows(user):
             }
 
 
-def xml_to_parquet(
+def parse_xml(
     input_path: str,
     output_path: str,
     batch_size: int = 100_000,
@@ -97,10 +97,3 @@ def xml_to_parquet(
     if verbose:
         print(f"Готово: записано {total} строк в {output_path}")
     return total
-
-
-if __name__ == "__main__":
-    xml_to_parquet(
-        input_path=r"C:\Users\Айдын\Универ\DS\Airlines-All\Airlines\PointzAggregator-AirlinesData.xml",
-        output_path=r"C:\Users\Айдын\PycharmProjects\AirlinesProject\process\output.parquet",
-    )
