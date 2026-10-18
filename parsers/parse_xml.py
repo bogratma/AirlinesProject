@@ -1,11 +1,9 @@
 import datetime as dt
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-
-BATCH_SIZE = 100_000
 
 SCHEMA = pa.schema([
     ("uid", pa.string()),
@@ -21,22 +19,21 @@ SCHEMA = pa.schema([
 ])
 
 
-def text(elem, tag):
-    """Достаёт текст дочернего тега."""
+def _text(elem, tag):
     child = elem.find(tag)
     if child is None or child.text is None:
         return None
     return child.text.strip()
 
 
-def parse_date(value):
+def _parse_date(value):
     try:
         return dt.date.fromisoformat(value) if value else None
     except ValueError:
         return None
 
 
-def user_to_rows(user):
+def _user_to_rows(user):
     name = user.find("name")
     first = name.get("first") if name is not None else None
     last = name.get("last") if name is not None else None
@@ -44,7 +41,7 @@ def user_to_rows(user):
 
     for card in user.findall("./cards/card"):
         card_number = card.get("number")
-        program = text(card, "bonusprogramm")
+        program = _text(card, "bonusprogramm")
 
         for act in card.findall("./activities/activity"):
             yield {
@@ -53,38 +50,57 @@ def user_to_rows(user):
                 "last_name": last,
                 "card_number": card_number,
                 "bonus_program": program,
-                "flight_code": text(act, "Code"),
-                "flight_date": parse_date(text(act, "Date")),
-                "departure": text(act, "Departure"),
-                "arrival": text(act, "Arrival"),
-                "fare": text(act, "Fare"),
+                "flight_code": _text(act, "Code"),
+                "flight_date": _parse_date(_text(act, "Date")),
+                "departure": _text(act, "Departure"),
+                "arrival": _text(act, "Arrival"),
+                "fare": _text(act, "Fare"),
             }
 
 
-def parse_xml(xml_path, output_path):
+def xml_to_parquet(
+    input_path: str,
+    output_path: str,
+    batch_size: int = 100_000,
+    compression: str = "snappy",
+    verbose: bool = True,):
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Входной файл не найден: {input_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     rows = []
     total = 0
-    writer = pq.ParquetWriter(output_path, SCHEMA, compression="snappy")
 
-    def flush():
-        nonlocal rows, total
-        if rows:
-            writer.write_table(pa.Table.from_pylist(rows, schema=SCHEMA))
-            total += len(rows)
-            rows = []
+    with pq.ParquetWriter(output_path, SCHEMA, compression=compression) as writer:
 
-    try:
-        context = ET.iterparse(xml_path, events=("start", "end"))
-        _, root = next(context)  # корневой элемент, чтобы чистить память
+        def flush():
+            nonlocal rows, total
+            if rows:
+                writer.write_table(pa.Table.from_pylist(rows, schema=SCHEMA))
+                total += len(rows)
+                rows = []
+
+        context = ET.iterparse(input_path, events=("start", "end"))
+        _, root = next(context)
 
         for event, elem in context:
             if event == "end" and elem.tag == "user":
-                rows.extend(user_to_rows(elem))
-                root.clear()  # освобождаем уже обработанных пользователей
-                if len(rows) >= BATCH_SIZE:
+                rows.extend(_user_to_rows(elem))
+                root.clear()
+                if len(rows) >= batch_size:
                     flush()
         flush()
-    finally:
-        writer.close()
 
-    print(f"Готово: записано {total} строк в {output_path}")
+    if verbose:
+        print(f"Готово: записано {total} строк в {output_path}")
+    return total
+
+
+if __name__ == "__main__":
+    xml_to_parquet(
+        input_path=r"C:\Users\Айдын\Универ\DS\Airlines-All\Airlines\PointzAggregator-AirlinesData.xml",
+        output_path=r"C:\Users\Айдын\PycharmProjects\AirlinesProject\process\output.parquet",
+    )
