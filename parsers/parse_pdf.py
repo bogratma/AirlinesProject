@@ -212,10 +212,3 @@ def parse_pdf(pdf_path, out_dir, first_page=4, last_page=None, batch_pages=500,
                        unmatched_path=unmatched, aircraft_path=aircraft_path,
                        pages_processed=end - first_page, n_raw=n_raw,
                        n_schedule=n_sched, n_unmatched=n_unmatched)
-
-
-if __name__ == "__main__":
-    parse_pdf(
-        r"C:\Users\Айдын\Универ\DS\Airlines-All\Airlines\Skyteam_Timetable.pdf",
-        "./skyteam", last_page=200
-    )
