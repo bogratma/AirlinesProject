@@ -1,9 +1,6 @@
-
 from __future__ import annotations
 
-import argparse
 import re
-import sys
 import tempfile
 import zipfile
 from concurrent.futures import ProcessPoolExecutor
@@ -80,25 +77,6 @@ def _as_digits(v, width):
         v = int(v)
     s = str(v).strip()
     return s.zfill(width) if s.isdigit() else s
-
-def add_quality_flags(df):
-    df = df.copy()
-
-    df["dup_ticket"] = df["ticket_no"].duplicated(keep=False)
-
-    air = pd.concat([
-        df[["from_iata", "from_city"]].set_axis(["iata", "city"], axis=1),
-        df[["to_iata", "to_city"]].set_axis(["iata", "city"], axis=1),
-    ]).astype(str)
-    n = air.groupby("iata")["city"].nunique()
-    bad = set(n[n > 1].index)
-    df["iata_conflict"] = (df["from_iata"].astype(str).isin(bad)
-                           | df["to_iata"].astype(str).isin(bad))
-
-    cnt = df.groupby(["name_key", "flight_date"], observed=True)["flight_no"].transform("nunique")
-    df["same_day_multi_flight"] = cnt.fillna(0) > 1
-
-    return df
 
 
 def parse_sheet(ws):
@@ -231,65 +209,81 @@ def quality_report(df):
 
 
 def collect_files(root: Path):
-    files = [p for p in root.rglob("*.xlsx") if not p.name.startswith("~$")]
-    files += [p for p in root.rglob("*.xlsm") if not p.name.startswith("~$")]
+    files = []
+    for p in root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in (".xlsx", ".xlsm"):
+            continue
+        if p.name.startswith(("~$", "._")) or "__MACOSX" in p.parts:
+            continue
+        files.append(p)
     return sorted(files)
 
 
-def parse_zip():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("input", help="папка с .xlsx (рекурсивно) или .zip-архив")
-    ap.add_argument("-o", "--output", default="boarding_passes.parquet")
-    ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--keep-constant", action="store_true",
-                    help="не выбрасывать колонки gate/seat/operator_note, даже если они константны")
-    args = ap.parse_args()
-
-    src = Path(args.input)
-    tmp = None
-    if src.suffix.lower() == ".zip":
-        tmp = tempfile.TemporaryDirectory()
-        with zipfile.ZipFile(src) as z:
-            z.extractall(tmp.name)
-        src = Path(tmp.name)
-
-    files = collect_files(src)
-    if not files:
-        sys.exit(f"В {src} не найдено ни одного .xlsx")
-    print(f"Найдено книг: {len(files)}")
-
+def _parse_all(files, workers):
+    paths = [str(p) for p in files]
+    workers = min(max(1, int(workers)), len(paths))
     records, errors = [], []
-    with ProcessPoolExecutor(max_workers=max(1, args.workers)) as ex:
-        for recs, errs in ex.map(parse_workbook, map(str, files), chunksize=1):
+    if workers == 1:
+        for recs, errs in map(parse_workbook, paths):
             records += recs
             errors += errs
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for recs, errs in ex.map(parse_workbook, paths, chunksize=1):
+                records += recs
+                errors += errs
+    return records, errors
+
+
+def parse_boardingPass_zip(zip_path, output_path="boarding_passes.parquet", *,
+                           workers=4, keep_constant=False, verbose=True):
+    log = print if verbose else (lambda *a, **k: None)
+
+    src = Path(zip_path)
+    if not src.exists():
+        raise FileNotFoundError(f"Не найден архив или папка: {src}")
+
+    out = Path(output_path)
+    if out.suffix == "":
+        out = out.with_suffix(".parquet")
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if src.is_file():
+            if src.suffix.lower() != ".zip":
+                raise ValueError(f"Ожидался .zip-архив или папка, получено: {src.name}")
+            with zipfile.ZipFile(src) as z:
+                z.extractall(tmp)
+            root = Path(tmp)
+        else:
+            root = src
+
+        files = collect_files(root)
+        if not files:
+            raise ValueError(f"В {src} не найдено ни одной книги .xlsx/.xlsm")
+        log(f"Найдено книг: {len(files)}")
+
+        records, errors = _parse_all(files, workers)
+
+    if errors:
+        err_path = out.with_name(out.stem + "_parse_errors.csv")
+        pd.DataFrame(errors).to_csv(err_path, index=False)
+        log(f"Проблемных листов: {len(errors)} -> {err_path}")
 
     if not records:
-        sys.exit("Ни одного талона распарсить не удалось, см. ошибки выше/в parse_errors.csv")
+        raise ValueError("Не удалось распарсить ни одного талона (см. файл с ошибками)")
 
     df = build_dataframe(records)
 
-    if not args.keep_constant:
+    if not keep_constant:
         df, dropped = drop_constant(df)
         for c, vals in dropped:
-            print(f"колонка '{c}' константна ({vals}) -> удалена")
+            log(f"колонка '{c}' константна ({vals}) -> удалена")
 
-    df = add_quality_flags(df)
-    quality_report(df)
+    if verbose:
+        quality_report(df)
 
-    out = Path(args.output)
     df.to_parquet(out, index=False, compression="zstd")
-    print(f"\nГотово: {out}  ({len(df):,} строк, {df.shape[1]} колонок)")
-
-    if errors:
-        err_path = out.with_name("parse_errors.csv")
-        pd.DataFrame(errors).to_csv(err_path, index=False)
-        print(f"Проблемных листов: {len(errors)} -> {err_path}")
-
-    if tmp:
-        tmp.cleanup()
-
-
-if __name__ == "__main__":
-   # sys.argv = ["BoardingPars.py", "<ADDRESS OF DIR OR ZIP>", "-o", "passes.parquet"]
-    main()
+    log(f"\nГотово: {out}  ({len(df):,} строк, {df.shape[1]} колонок)")
+    return df
