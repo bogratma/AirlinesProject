@@ -9,7 +9,6 @@ def parse_csv(csv_path, output_path):
         keep_default_na=False,
         encoding="utf-8",
     )
-
     df = df.rename(columns={
         "PassengerFirstName": "first_name",
         "PassengerSecondName": "patronymic",
@@ -73,3 +72,4 @@ def parse_csv(csv_path, output_path):
     print("Полных дублей:", df.duplicated().sum())
 
     df.to_parquet(output_path, engine="pyarrow", compression="zstd", index=False)
+    return df
