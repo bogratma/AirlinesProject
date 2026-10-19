@@ -11,7 +11,7 @@ try:
 except ImportError:
     from yaml import SafeLoader as Loader
 
-DATE_RE = re.compile(r"^'?\d{4}-\d{2}-\d{2}'?:\s*$")
+DATE_RE = re.compile(r"^\s*'?\d{4}-\d{2}-\d{2}'?\s*(?::\s*|\s*#.*)?$")
 
 COLS = ["date", "flight", "from", "to", "status",
         "loyalty_program", "loyalty_number", "class", "fare"]
@@ -40,39 +40,68 @@ def parse_yaml(path, output_parquet_path, encoding="utf-8", batch_size=50_000):
             batch.clear()
 
         def process(block):
-            data = yaml.load("".join(block), Loader=Loader)
-            for date, flights in (data or {}).items():
-                for flight, info in (flights or {}).items():
-                    info = info or {}
-                    base = {
-                        "date": _s(date),
-                        "flight": _s(flight),
-                        "from": _s(info.get("FROM")),
-                        "to": _s(info.get("TO")),
-                        "status": _s(info.get("STATUS")),
-                    }
-                    ff = info.get("FF")
-                    if isinstance(ff, dict) and ff:
-                        for card, d in ff.items():
-                            parts = str(card).split(" ", 1)
-                            d = d if isinstance(d, dict) else {}
+            cleaned_block = [line.replace("\xa0", " ") for line in block]
+            block_text = "".join(cleaned_block)
+
+            try:
+                data = yaml.load(block_text, Loader=Loader)
+            except Exception as e:
+                print(f"\n[ОШИБКА YAML БЛОКА] Не удалось распарсить YAML:\n{e}")
+                return
+
+            if not isinstance(data, dict):
+                return
+
+            for date, flights in data.items():
+                if not isinstance(flights, dict):
+                    continue
+
+                for flight, info in flights.items():
+                    try:
+                        # Защита от кривой структуры: если info не словарь, делаем его пустым
+                        info = info if isinstance(info, dict) else {}
+
+                        base = {
+                            "date": _s(date),
+                            "flight": _s(flight),
+                            "from": _s(info.get("FROM")),
+                            "to": _s(info.get("TO")),
+                            "status": _s(info.get("STATUS")),
+                        }
+
+                        ff = info.get("FF")
+                        if isinstance(ff, dict) and ff:
+                            for card, d in ff.items():
+                                parts = str(card).split(" ", 1)
+                                d = d if isinstance(d, dict) else {}
+                                batch.append({
+                                    **base,
+                                    "loyalty_program": parts[0],
+                                    "loyalty_number": parts[1].strip() if len(parts) > 1 else None,
+                                    "class": _s(d.get("CLASS")),
+                                    "fare": _s(d.get("FARE")),
+                                })
+                        else:
                             batch.append({
                                 **base,
-                                "loyalty_program": parts[0],
-                                "loyalty_number": parts[1].strip() if len(parts) > 1 else None,
-                                "class": _s(d.get("CLASS")),
-                                "fare": _s(d.get("FARE")),
+                                "loyalty_program": None,
+                                "loyalty_number": None,
+                                "class": None,
+                                "fare": None
                             })
-                    else:
-                        batch.append({**base, "loyalty_program": None, "loyalty_number": None,
-                                      "class": None, "fare": None})
+                    except Exception as flight_err:
+                        # Ошибка в конкретном рейсе не роняет весь файл, а логируется
+                        print(f"[ПРОПУЩЕН РЕЙС] Дата: {date}, Рейс: {flight} | Причина: {flight_err}")
+                        continue
+
             if len(batch) >= batch_size:
                 flush()
 
         block = []
         with open(path, encoding=encoding) as f:
             for line in f:
-                if DATE_RE.match(line):
+                line_clean = line.replace("\xa0", " ")
+                if DATE_RE.match(line_clean):
                     if block:
                         process(block)
                     block = [line]

@@ -131,7 +131,8 @@ def unify_yaml(df):
     return _finish(df, "yaml", {
         "flight_code": _flight(_c(df, "flight")),
         "date": _date(df, "date"),
-        "dep_airport": _iata(_c(df, "from")), "arr_airport": _iata(_c(df, "to")),
+        "dep_airport": _iata(_c(df, "from")),
+        "arr_airport": _iata(_c(df, "to")),
         "card_program": _norm(_c(df, "loyalty_program")),
         "card_number": _norm(_c(df, "loyalty_number")),
         "travel_class": _norm(_c(df, "class")), "fare": _norm(_c(df, "fare")),
@@ -154,15 +155,23 @@ def unify_xml(df, program_codes=None):
     })
 
 
-def unify_csv(df):
+def unify_csv(df, city_map=None):
     if isinstance(df, pd.DataFrame):
         df = pl.from_pandas(df)
+
     df = _with_name_key(df, pl.concat_str(
         [_c(df, "last_name").fill_null(""), pl.lit(" "), _c(df, "first_name").fill_null("")]))
+    def _iata_dyn(e):
+        norm_e = _norm(e).str.to_uppercase()
+        if city_map:
+            return norm_e.replace_strict(city_map, default=norm_e, return_dtype=pl.String)
+        return norm_e
+    dep_col = _iata_dyn(_c(df, "departure")) if _has(df, "departure") else _iata_dyn(_c(df, "origin"))
     return _finish(df, "csv", {
         "flight_code": _flight(_c(df, "flight_number")),
         "date": _date(df, "flight_date"),
-        "arr_airport": _iata(_c(df, "destination")),
+        "dep_airport": pl.lit(None, dtype=pl.String),
+        "arr_airport": pl.lit(None, dtype=pl.String),
         "dep_ts": _ts_col(df, "flight_datetime"),
         "name_key": pl.col("_name_key"),
         "birth_date": _date(df, "birth_date"),

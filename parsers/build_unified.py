@@ -1,7 +1,7 @@
 import os
 import polars as pl
 
-from .unify import (unify_tab, unify_yaml, unify_json, unify_xml, unify_csv, unify_boarding)
+from .unify import (unify_tab, unify_yaml, unify_json, unify_xml, unify_csv, unify_boarding, airports_from_schedule)
 
 DEFAULT_PATHS = {
     "tab": "clean_tab.parquet", "yaml": "clean_yaml.parquet", "json": "clean_json.parquet",
@@ -35,9 +35,24 @@ def build_unified_file(process_dir="process", out_name="unified.parquet", paths=
         df.write_parquet(p)
         parts[name] = p
         print(f"{name}: {len(df)} строк")
+
+    pdf_parquet = f"{process_dir}/clean_pdf.parquet/skyteam_schedule.parquet"
+
+    city_map = {}
+    if os.path.exists(pdf_parquet):
+        print("Загружаем справочник аэропортов из расписания PDF...")
+        airports_df = airports_from_schedule(pdf_parquet).drop_nulls("city")
+        for row in airports_df.select("city", "airport").iter_rows():
+            city, iata = row
+            if city and iata:
+                city_map[city.strip().upper()] = iata.strip().upper()
+        print(f"Загружено городов в справочник: {len(city_map)}")
     for name, fn in [("tab", unify_tab), ("yaml", unify_yaml), ("json", unify_json),
-                     ("boarding", unify_boarding), ("csv", unify_csv)]:
+                     ("boarding", unify_boarding)]:
         write_part(name, fn(pl.read_parquet(full[name])))
+    if os.path.exists(full["csv"]):
+        csv_df = pl.read_parquet(full["csv"])
+        write_part("csv", unify_csv(csv_df, city_map))
 
     xml_df = pl.read_parquet(full["xml"])
     codes = learn_program_codes(xml_df, [parts[n] for n in ("tab", "yaml", "json", "boarding")])
