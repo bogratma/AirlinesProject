@@ -3,6 +3,7 @@ import re
 import polars as pl
 import pandas as pd
 from unidecode import unidecode
+from rapidfuzz import process, fuzz
 SCHEMA = {
     "source": pl.String,
     "flight_code": pl.String, "date": pl.String,
@@ -81,21 +82,42 @@ def canon_name(raw):
     if not raw:
         return None
     try:
+        # Базовая нормализация: unidecode + убираем мусор + сортируем слова по алфавиту
         s = unidecode(str(raw)).upper()
         s = re.sub(r"[’'`\-]", "", s)
-        toks = [t for t in re.split(r"[^A-Z]+", s) if len(t) > 0]
-        if not toks:
-            return None
-        return " ".join(sorted(toks))
+        toks = [t for t in re.split(r"[^A-Z]+", s) if len(t) > 1]
+        return " ".join(sorted(toks)) if toks else None
     except Exception:
         return str(raw).upper() if raw else None
+
+
 def _with_name_key(df, raw_expr):
     df = df.with_columns(_norm(raw_expr).alias("_raw_name"))
     uniq = df["_raw_name"].drop_nulls().unique().to_list()
-    mapping = {n: canon_name(n) for n in uniq}
-    return df.with_columns(
-        pl.col("_raw_name").replace_strict(mapping, default=None, return_dtype=pl.String).alias("_name_key"))
+    raw_to_canon = {n: canon_name(n) for n in uniq if canon_name(n)}
+    unique_canons = list(set(raw_to_canon.values()))
+    canonical_mapping = {}
+    master_names = []
+    for canon in unique_canons:
+        if not master_names:
+            master_names.append(canon)
+            canonical_mapping[canon] = canon
+            continue
+        match = process.extractOne(canon, master_names, scorer=fuzz.ratio)
+        if match and match[1] >= 0.88:  # Порог схожности (0.88 - 0.92 обычно идеально)
+            canonical_mapping[canon] = match[0]
+        else:
+            master_names.append(canon)
+            canonical_mapping[canon] = canon
+    final_mapping = {
+        raw: canonical_mapping[canon]
+        for raw, canon in raw_to_canon.items()
+        if canon in canonical_mapping
+    }
 
+    return df.with_columns(
+        pl.col("_raw_name").replace_strict(final_mapping, default=None, return_dtype=pl.String).alias("_name_key")
+    )
 
 def _two_tokens(e):
     return _norm(e).str.replace_all(r"\s+", " ").str.extract(r"^(\S+(?: \S+)?)", 1)
@@ -110,7 +132,32 @@ def _finish(df, source, mapping):
 
 
 def unify_tab(df):
-    df = _with_name_key(df, _two_tokens(_c(df, "PaxName")))
+    # Берем сырую строку, переводим в латиницу через unidecode, убираем отчество (оставляем первые 2 слова) и передаем в _with_name_key
+    raw_names = _c(df, "PaxName")
+
+    # Модифицируем обработку конкретно для tab внутри unify_tab:
+    df = df.with_columns(
+        _raw_name=_norm(raw_names)
+    )
+
+    # Пересчитываем name_key с учетом того, что там русские ФИО
+    uniq = df["_raw_name"].drop_nulls().unique().to_list()
+    mapping = {}
+    for n in uniq:
+        if not n:
+            continue
+        # Переводим кириллицу в латиницу
+        lat = unidecode(str(n)).upper()
+        # Дробим на слова, оставляем только первые два (Фамилия и Имя, отсекая отчество)
+        toks = [t for t in re.split(r"[^A-Z]+", lat) if len(t) > 1]
+        if len(toks) > 2:
+            toks = toks[:2]  # Оставляем только Фамилию и Имя
+        mapping[n] = " ".join(sorted(toks)) if toks else None
+
+    df = df.with_columns(
+        pl.col("_raw_name").replace_strict(mapping, default=None, return_dtype=pl.String).alias("_name_key")
+    )
+
     return _finish(df, "tab", {
         "flight_code": _flight(_c(df, "FlightCodeSh")),
         "date": _date(df, "DepartDate"),

@@ -1,6 +1,5 @@
 import os
 import polars as pl
-from transliterate import translit
 
 from .unify import (unify_tab, unify_yaml, unify_json, unify_xml, unify_csv, unify_boarding, airports_from_schedule)
 
@@ -207,12 +206,8 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
             pl.col("dep_ts").is_not_null() &
             pl.col("arr_ts").is_not_null()
         )
-        .with_columns(
-            dep_ts=pl.col("dep_ts").cast(pl.Datetime("us")),
-            arr_ts=pl.col("arr_ts").cast(pl.Datetime("us"))
-        )
         .unique(subset=["person_id", "flight_code", "date", "dep_ts", "arr_ts"])
-        .sort(["person_id", "dep_ts"])
+        .sort(["person_id", "dep_ts"])  # ЖЕСТКАЯ СОРТИРОВКА ПО ВРЕМЕНИ
     )
 
     teleport_anomalies = (
@@ -224,6 +219,10 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
         .filter(
             pl.col("prev_arr_ts").is_not_null() &
             (pl.col("prev_arr_airport") != pl.col("dep_airport")) &
+            # Жесткий лимит: проверяем, что новый рейс идет СРАЗУ же (разница между прилетом и вылетом меньше 12 часов)
+            (pl.col("dep_ts") >= pl.col("prev_arr_ts")) &
+            (pl.col("dep_ts") < pl.col("prev_arr_ts") + pl.duration(hours=12)) &
+            # И при этом перерыв между ними меньше 30 минут (физическая невозможность успеть)
             (pl.col("dep_ts") < pl.col("prev_arr_ts") + pl.duration(minutes=30))
         )
         .select(
@@ -255,21 +254,30 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
             pl.col("passport").drop_nulls().unique().str.join(" | ").alias("passport")
         )
     )
+    flights_info = (
+        df_conf.select([
+            "person_id", "flight_code", "date",
+            "dep_ts", "arr_ts",
+            "card_program", "card_number", "dep_airport", "arr_airport", "ticket"
+        ])
+        .unique(subset=["person_id", "flight_code", "date"])
+        .with_columns(
+            # Переводим таймстампы в красивый строковый формат "YYYY-MM-DD HH:MM"
+            dep_time_readable=pl.col("dep_ts").dt.to_string("%Y-%m-%d %H:%M"),
+            arr_time_readable=pl.col("arr_ts").dt.to_string("%Y-%m-%d %H:%M")
+        )
+    )
 
     final_report = (
         aggregated_reasons
         .join(person_profile, on="person_id", how="left")
         .join(
-            df_conf.select([
-                "person_id", "flight_code", "date",
-                "card_program", "card_number", "dep_airport", "arr_airport", "ticket"
-            ]).unique(subset=["person_id", "flight_code", "date"]),
+            flights_info,
             on=["person_id", "flight_code", "date"],
             how="left"
         )
         .sort(["total_reasons_count", "max_severity", "person_id"], descending=[True, True, False])
     )
-
     parquet_path = f"{output_prefix}.parquet"
     final_report.write_parquet(parquet_path)
     print(f" Успешно сохранено в Parquet: {parquet_path}")
