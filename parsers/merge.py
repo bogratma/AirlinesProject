@@ -1,6 +1,6 @@
 import polars as pl
 
-SOURCE_PRIORITY = {"tab": 0, "csv": 1, "boarding": 2, "yaml": 3, "xml": 4, "json": 5}
+SOURCE_PRIORITY = {"pdf":0, "tab": 1, "csv": 2, "boarding": 3, "yaml": 4, "xml": 5, "json": 6}
 EVENT_FIELDS = ["dep_airport", "arr_airport", "dep_ts", "arr_ts", "name_key", "birth_date",
                 "passport", "ticket", "booking_code", "card_program", "card_number",
                 "nickname", "travel_class", "fare", "agent"]
