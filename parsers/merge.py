@@ -23,17 +23,19 @@ def _ids(u):
         return pl.when(pl.col(cols[-1]).is_not_null()).then(pl.concat_str(parts))
 
     return u.with_columns(
-        mk("card", "card_program", "card_number").alias("_i_card"),
         mk("pass", "passport").alias("_i_pass"),
         mk("tick", "ticket").alias("_i_tick"),
         mk("nick", "nickname").alias("_i_nick"),
+        pl.when(pl.col("name_key").is_not_null())
+          .then(pl.concat_str([pl.lit("name:"), pl.col("name_key")]))
+          .alias("_i_name"),
         pl.when(pl.col("name_key").is_not_null() & pl.col("birth_date").is_not_null())
           .then(pl.concat_str([pl.lit("nb:"), pl.col("name_key"), pl.lit("|"), pl.col("birth_date")]))
           .alias("_i_nb"),
     )
 
 
-ID_COLS = ["_i_card", "_i_pass", "_i_tick", "_i_nick", "_i_nb"]
+ID_COLS = ["_i_pass", "_i_tick", "_i_nb"]
 
 
 def assign_person_id(u):
@@ -58,8 +60,15 @@ def assign_person_id(u):
     for col in ID_COLS:
         u = u.join(idmap.rename({"ident": col, "person_id": f"pid{col}"}), on=col, how="left")
     u = (u.sort("_row")
-          .with_columns(person_id=pl.coalesce([f"pid{c}" for c in ID_COLS]))
-          .drop(["_row"] + ID_COLS + [f"pid{c}" for c in ID_COLS]))
+         .with_columns(
+        person_id=pl.coalesce([f"pid{c}" for c in ID_COLS]).cast(pl.String)
+    )
+         .with_columns(
+        person_id=pl.when(pl.col("person_id").is_not_null())
+        .then(pl.col("person_id"))
+        .otherwise(pl.concat_str([pl.lit("row_"), pl.col("_row").cast(pl.String)]))
+    )
+         .drop(["_row"] + ID_COLS + [f"pid{c}" for c in ID_COLS]))
     return u
 
 

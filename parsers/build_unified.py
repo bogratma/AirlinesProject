@@ -1,5 +1,6 @@
 import os
 import polars as pl
+from transliterate import translit
 
 from .unify import (unify_tab, unify_yaml, unify_json, unify_xml, unify_csv, unify_boarding, airports_from_schedule)
 
@@ -7,6 +8,7 @@ DEFAULT_PATHS = {
     "tab": "clean_tab.parquet", "yaml": "clean_yaml.parquet", "json": "clean_json.parquet",
     "xml": "clean_xml.parquet", "csv": "clean_csv.parquet", "boarding": "clean_zip.parquet",
 }
+
 
 
 def learn_program_codes(xml_df, code_parts):
@@ -112,7 +114,7 @@ def enrich_and_validate_with_pdf(unified_df, pdf_schedule_path):
 def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_spies"):
     print("\n=== ЭТАП 5: Анализ аномалий и экспорт отчета по шпионам ===")
 
-    # 1. Динамически вычисляем конфликты аэропортов по источникам прямо из df_with_ids
+    # 1. Динамически вычисляем конфликты аэропортов по источникам из df_with_ids
     conflicts = (
         df_with_ids.filter(
             pl.col("person_id").is_not_null() &
@@ -126,13 +128,12 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
         )
     )
 
-    # Присоединяем флаги конфликтов обратно к строкам
     df_conf = df_with_ids.join(conflicts, on=["person_id", "flight_code", "date"], how="left")
 
-    # 2. Собираем список аномалий
+    # 2. Инициализируем список аномалий
     anomalies_list = []
 
-    # Аномалия: Расхождение с официальным расписанием PDF (если колонка есть)
+    # Аномалия А: Расхождение с официальным расписанием PDF
     if "route_mismatch" in df_conf.columns:
         pdf_mismatches = df_conf.filter(
             pl.col("route_mismatch") == True
@@ -143,7 +144,7 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
         )
         anomalies_list.append(pdf_mismatches)
 
-    # Аномалия: Конфликт аэропортов между источниками
+    # Аномалия Б: Конфликт аэропортов между источниками
     source_conflicts = df_conf.filter(
         pl.col("arr_conflict") | pl.col("dep_conflict")
     ).select(
@@ -152,30 +153,31 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
         pl.lit(3).alias("severity")
     )
     anomalies_list.append(source_conflicts)
-
-    # Аномалия: Шеринг карты лояльности
     shared_cards = (
         df_conf.filter(pl.col("card_number").is_not_null())
         .group_by(["card_program", "card_number"])
-        .agg(pl.col("person_id").n_unique().alias("unique_owners"))
+        .agg(
+            # Считаем уникальных владельцев по ИМЕНИ, а не по внутреннему person_id
+            unique_owners=pl.col("name_key").n_unique(),
+            owners=pl.col("name_key").drop_nulls().unique().sort()
+        )
         .filter(pl.col("unique_owners") > 1)
     )
-
     card_sharing = (
         df_conf.join(shared_cards, on=["card_program", "card_number"], how="inner")
         .select(
             "person_id", "flight_code", "date",
             pl.concat_str([
-                pl.lit("Использование чужой карты лояльности (всего владельцев: "),
-                pl.col("unique_owners").cast(pl.String),
-                pl.lit(")")
+                pl.lit("Шеринг карты лояльности (программа: "),
+                pl.col("card_program").fill_null(""),
+                pl.lit("). Владельцы: ["),
+                pl.col("owners").list.join(", "),
+                pl.lit("]")
             ]).alias("reason"),
             pl.lit(2).alias("severity")
         )
     )
     anomalies_list.append(card_sharing)
-
-    # Аномалия: Использование нескольких паспортов
     multi_passports = (
         df_conf.filter(pl.col("passport").is_not_null())
         .group_by("person_id")
@@ -197,7 +199,42 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
     )
     anomalies_list.append(passport_anomalies)
 
-    # 3. Объединение и агрегация всех причин
+    unique_flights_for_teleport = (
+        df_conf.filter(
+            pl.col("person_id").is_not_null() &
+            pl.col("dep_airport").is_not_null() &
+            pl.col("arr_airport").is_not_null() &
+            pl.col("dep_ts").is_not_null() &
+            pl.col("arr_ts").is_not_null()
+        )
+        .with_columns(
+            dep_ts=pl.col("dep_ts").cast(pl.Datetime("us")),
+            arr_ts=pl.col("arr_ts").cast(pl.Datetime("us"))
+        )
+        .unique(subset=["person_id", "flight_code", "date", "dep_ts", "arr_ts"])
+        .sort(["person_id", "dep_ts"])
+    )
+
+    teleport_anomalies = (
+        unique_flights_for_teleport
+        .with_columns(
+            prev_arr_ts=pl.col("arr_ts").shift(1).over("person_id"),
+            prev_arr_airport=pl.col("arr_airport").shift(1).over("person_id")
+        )
+        .filter(
+            pl.col("prev_arr_ts").is_not_null() &
+            (pl.col("prev_arr_airport") != pl.col("dep_airport")) &
+            (pl.col("dep_ts") < pl.col("prev_arr_ts") + pl.duration(minutes=30))
+        )
+        .select(
+            "person_id", "flight_code", "date",
+            pl.lit("Физически невозможное перемещение (телепортация / overlap рейсов)").alias("reason"),
+            pl.lit(3).alias("severity")
+        )
+    )
+
+    print(f"Найдено телепортаций: {len(teleport_anomalies)}")
+    anomalies_list.append(teleport_anomalies)
     raw_anomalies = pl.concat(anomalies_list, how="diagonal").unique()
 
     aggregated_reasons = (
@@ -210,7 +247,6 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
         )
     )
 
-    # 4. Собираем ВСЕ уникальные имена и паспорта для каждого person_id (чтобы не было null)
     person_profile = (
         df_conf.filter(pl.col("person_id").is_not_null())
         .group_by("person_id")
@@ -238,7 +274,6 @@ def export_suspicious_passengers(df_with_ids, output_prefix="process/suspicious_
     final_report.write_parquet(parquet_path)
     print(f" Успешно сохранено в Parquet: {parquet_path}")
 
-    # Сохранение в Excel
     try:
         final_report.write_excel(f"{output_prefix}.xlsx")
         print(f" Успешно сохранено в Excel: {output_prefix}.xlsx")

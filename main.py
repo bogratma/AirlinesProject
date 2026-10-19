@@ -32,13 +32,13 @@ zip_path = r'C:\Users\Vladislav\Desktop\Airlines\YourBoardingPassDotAero.zip'
 parquet_zip_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_zip.parquet'
 
 def main():
-    #@Этап 1: Раскомментируйте при необходимости парсинг
-    parse_json(json_path, parquet_json_path)
-    parse_tab(tab_path, parquet_tab_path)
-    parse_yaml(yaml_path, parquet_yaml_path)
-    parse_xml(xml_path, parquet_xml_path)
-    parse_csv(csv_path, parquet_csv_path)
-    parse_boardingPass_zip(zip_path, parquet_zip_path)
+    # Этап 1: Раскомментируйте при необходимости парсинг
+    # parse_json(json_path, parquet_json_path)
+    # parse_tab(tab_path, parquet_tab_path)
+    # parse_yaml(yaml_path, parquet_yaml_path)
+    # parse_xml(xml_path, parquet_xml_path)
+    # parse_csv(csv_path, parquet_csv_path)
+    # parse_boardingPass_zip(zip_path, parquet_zip_path)
 
     print("\n=== ЭТАП 2: Унификация схем и сборка общей базы ===")
     unified_raw_path = build_unified_file(
@@ -81,12 +81,26 @@ def main():
                     "source", "flight_code", "date", "dep_airport", "arr_airport",
                     "name_key", "birth_date", "passport", "ticket", "card_program", "card_number",
                 ))
+
     else:
         print("Конфликтов не обнаружено!")
     export_suspicious_passengers(
         df_with_ids,
         output_prefix=r"C:\Users\Vladislav\PycharmProjects\Parser\process\suspicious_passengers_report"
     )
+    names_inspection = (
+        df_with_ids.filter(pl.col("name_key").is_not_null())
+        .group_by("name_key")
+        .agg([
+            pl.col("person_id").n_unique().alias("unique_pids"),
+            pl.col("passport").drop_nulls().unique().implode().list.join(", ").alias("passports"),
+            pl.col("flight_code").count().alias("total_flights")
+        ])
+        .sort("name_key")
+    )
+
+    names_inspection.write_csv("names_inspection.csv")
+    print("Файл names_inspection.csv успешно создан!")
 
 
 if __name__ == "__main__":

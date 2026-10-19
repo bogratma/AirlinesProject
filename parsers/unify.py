@@ -1,9 +1,8 @@
 import re
 
 import polars as pl
-from unidecode import unidecode
 import pandas as pd
-
+from unidecode import unidecode
 SCHEMA = {
     "source": pl.String,
     "flight_code": pl.String, "date": pl.String,
@@ -79,33 +78,17 @@ def _ts_col(df, name):
 
 
 def canon_name(raw):
-        if not raw:
-            return None
-        s = unidecode(raw).upper()
+    if not raw:
+        return None
+    try:
+        s = unidecode(str(raw)).upper()
         s = re.sub(r"[’'`\-]", "", s)
-
-        # --- УНИВЕРСАЛЬНАЯ НОРМАЛИЗАЦИЯ ДЛЯ ЛЮБЫХ ИМЕН ---
-        # 1. Гласные и дифтонги (разница систем ICAO / ГОСТ)
-        s = s.replace("IU", "YU")  # Liudmila -> Lyudmila, Iurii -> Yuriy
-        s = s.replace("IA", "YA")  # Ksenia -> Kseniya, Maria -> Mariya
-        s = s.replace("YE", "E")  # Evgeny -> Evgeni (по желанию, но осторожно)
-
-        # 2. Шипящие и сложные согласные (Ш, Щ, Ж, Х, Ц)
-        s = s.replace("SCH", "SH")  # Scherbatoff -> Sherbatoff
-        s = s.replace("KH", "H")  # Khokhlov -> Hohlov (или наоборот)
-        s = s.replace("CZ", "TS")  # Cvetkova -> Tsvetkova
-        s = s.replace("ZH", "Z")  # Zhukov -> Zukov (иногда сокращают)
-
-        # 3. Окончания (ИЙ / ИИ / ЫЙ)
-        s = re.sub(r"II\b", "IY", s)  # Petrovskii -> Petrovskiy
-        s = re.sub(r"YY\b", "Y", s)
-        s = re.sub(r"Y\b", "I", s)  # Иногда на конце путают Y и I
-        # --------------------------------------------------
-
-        toks = [t for t in re.split(r"[^A-Z]+", s) if len(t) > 1]
-        return " ".join(sorted(toks)) or None
-
-
+        toks = [t for t in re.split(r"[^A-Z]+", s) if len(t) > 0]
+        if not toks:
+            return None
+        return " ".join(sorted(toks))
+    except Exception:
+        return str(raw).upper() if raw else None
 def _with_name_key(df, raw_expr):
     df = df.with_columns(_norm(raw_expr).alias("_raw_name"))
     uniq = df["_raw_name"].drop_nulls().unique().to_list()
