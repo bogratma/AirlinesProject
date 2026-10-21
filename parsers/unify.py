@@ -1,9 +1,8 @@
-import re
-
 import polars as pl
 import pandas as pd
-from unidecode import unidecode
-from rapidfuzz import process, fuzz
+
+from .name_norm import with_name_key
+
 SCHEMA = {
     "source": pl.String,
     "flight_code": pl.String, "date": pl.String,
@@ -25,6 +24,13 @@ def _c(df, name):
     if not _has(df, name):
         return pl.lit(None, dtype=pl.String)
     return pl.col(name).cast(pl.String)
+
+
+def _first(df, *names):
+    for n in names:
+        if _has(df, n):
+            return _c(df, n)
+    return pl.lit(None, dtype=pl.String)
 
 
 def _norm(e):
@@ -78,51 +84,6 @@ def _ts_col(df, name):
     return pl.col(name).cast(pl.Datetime("us"))
 
 
-def canon_name(raw):
-    if not raw:
-        return None
-    try:
-        # Базовая нормализация: unidecode + убираем мусор + сортируем слова по алфавиту
-        s = unidecode(str(raw)).upper()
-        s = re.sub(r"[’'`\-]", "", s)
-        toks = [t for t in re.split(r"[^A-Z]+", s) if len(t) > 1]
-        return " ".join(sorted(toks)) if toks else None
-    except Exception:
-        return str(raw).upper() if raw else None
-
-
-def _with_name_key(df, raw_expr):
-    df = df.with_columns(_norm(raw_expr).alias("_raw_name"))
-    uniq = df["_raw_name"].drop_nulls().unique().to_list()
-    raw_to_canon = {n: canon_name(n) for n in uniq if canon_name(n)}
-    unique_canons = list(set(raw_to_canon.values()))
-    canonical_mapping = {}
-    master_names = []
-    for canon in unique_canons:
-        if not master_names:
-            master_names.append(canon)
-            canonical_mapping[canon] = canon
-            continue
-        match = process.extractOne(canon, master_names, scorer=fuzz.ratio)
-        if match and match[1] >= 0.88:  # Порог схожности (0.88 - 0.92 обычно идеально)
-            canonical_mapping[canon] = match[0]
-        else:
-            master_names.append(canon)
-            canonical_mapping[canon] = canon
-    final_mapping = {
-        raw: canonical_mapping[canon]
-        for raw, canon in raw_to_canon.items()
-        if canon in canonical_mapping
-    }
-
-    return df.with_columns(
-        pl.col("_raw_name").replace_strict(final_mapping, default=None, return_dtype=pl.String).alias("_name_key")
-    )
-
-def _two_tokens(e):
-    return _norm(e).str.replace_all(r"\s+", " ").str.extract(r"^(\S+(?: \S+)?)", 1)
-
-
 def _finish(df, source, mapping):
     return df.select([
         pl.lit(source).alias("source") if c == "source"
@@ -132,31 +93,7 @@ def _finish(df, source, mapping):
 
 
 def unify_tab(df):
-    # Берем сырую строку, переводим в латиницу через unidecode, убираем отчество (оставляем первые 2 слова) и передаем в _with_name_key
-    raw_names = _c(df, "PaxName")
-
-    # Модифицируем обработку конкретно для tab внутри unify_tab:
-    df = df.with_columns(
-        _raw_name=_norm(raw_names)
-    )
-
-    # Пересчитываем name_key с учетом того, что там русские ФИО
-    uniq = df["_raw_name"].drop_nulls().unique().to_list()
-    mapping = {}
-    for n in uniq:
-        if not n:
-            continue
-        # Переводим кириллицу в латиницу
-        lat = unidecode(str(n)).upper()
-        # Дробим на слова, оставляем только первые два (Фамилия и Имя, отсекая отчество)
-        toks = [t for t in re.split(r"[^A-Z]+", lat) if len(t) > 1]
-        if len(toks) > 2:
-            toks = toks[:2]  # Оставляем только Фамилию и Имя
-        mapping[n] = " ".join(sorted(toks)) if toks else None
-
-    df = df.with_columns(
-        pl.col("_raw_name").replace_strict(mapping, default=None, return_dtype=pl.String).alias("_name_key")
-    )
+    df = with_name_key(df, _c(df, "PaxName"), max_tokens=2)
 
     return _finish(df, "tab", {
         "flight_code": _flight(_c(df, "FlightCodeSh")),
@@ -189,7 +126,7 @@ def unify_yaml(df):
 
 
 def unify_xml(df, program_codes=None):
-    df = _with_name_key(df, pl.concat_str(
+    df = with_name_key(df, pl.concat_str(
         [_c(df, "last_name").fill_null(""), pl.lit(" "), _c(df, "first_name").fill_null("")]))
     prog = _norm(_c(df, "bonus_program"))
     if program_codes:
@@ -208,19 +145,20 @@ def unify_csv(df, city_map=None):
     if isinstance(df, pd.DataFrame):
         df = pl.from_pandas(df)
 
-    df = _with_name_key(df, pl.concat_str(
+    df = with_name_key(df, pl.concat_str(
         [_c(df, "last_name").fill_null(""), pl.lit(" "), _c(df, "first_name").fill_null("")]))
+
     def _iata_dyn(e):
         norm_e = _norm(e).str.to_uppercase()
-        if city_map:
-            return norm_e.replace_strict(city_map, default=norm_e, return_dtype=pl.String)
-        return norm_e
-    dep_col = _iata_dyn(_c(df, "departure")) if _has(df, "departure") else _iata_dyn(_c(df, "origin"))
+        res = norm_e.replace_strict(city_map, default=norm_e, return_dtype=pl.String) if city_map else norm_e
+        return pl.when(res.str.contains(r"^[A-Z]{3}$")).then(res)
+
+    arr = _iata_dyn(_first(df, "destination", "to_city", "arrival", "dest"))
     return _finish(df, "csv", {
         "flight_code": _flight(_c(df, "flight_number")),
         "date": _date(df, "flight_date"),
         "dep_airport": pl.lit(None, dtype=pl.String),
-        "arr_airport": pl.lit(None, dtype=pl.String),
+        "arr_airport": arr,
         "dep_ts": _ts_col(df, "flight_datetime"),
         "name_key": pl.col("_name_key"),
         "birth_date": _date(df, "birth_date"),
@@ -231,7 +169,7 @@ def unify_csv(df, city_map=None):
 
 
 def unify_boarding(df):
-    df = _with_name_key(df, _c(df, "passenger_name_raw"))
+    df = with_name_key(df, _c(df, "passenger_name_raw"))
     ff = _norm(_c(df, "ff_raw")).str.to_uppercase()
     prog = ff.str.extract(r"^([A-Z0-9]{2})[\s\-]*\d+$", 1)
     num = ff.str.extract(r"^[A-Z0-9]{2}[\s\-]*(\d+)$", 1)
@@ -249,7 +187,7 @@ def unify_boarding(df):
 
 
 def unify_json(df):
-    df = _with_name_key(df, pl.concat_str(
+    df = with_name_key(df, pl.concat_str(
         [_c(df, "last_name").fill_null(""), pl.lit(" "), _c(df, "first_name").fill_null("")]))
     cards = _norm(_c(df, "loyalty_programs")).str.split(" | ").alias("_cards")
     passports = _norm(_c(df, "passports")).str.split(", ").alias("_pass")

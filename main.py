@@ -1,106 +1,100 @@
+import os
+
 import polars as pl
 
-# Импорт парсеров
 from parsers.parse_json import parse_json
+from parsers.parse_pdf import parse_pdf
 from parsers.parse_tab import parse_tab
 from parsers.parse_yaml import parse_yaml
 from parsers.parse_xml import parse_xml
 from parsers.parse_csv import parse_csv
 from parsers.parse_boarding_passes import parse_boardingPass_zip
-from parsers.build_unified import build_unified_file, export_suspicious_passengers
-from parsers.merge import assign_person_id, merge_events
 
-json_path = r'C:\Users\Vladislav\Desktop\Airlines\FrequentFlyerForum-Profiles.json'
-parquet_json_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_json.parquet'
+from parsers.build_unified import build_unified_file, pdf_schedule_path
+from parsers.merge import merge_events
+from parsers import spy_detect as sd
 
-tab_path = r'C:\Users\Vladislav\Desktop\Airlines\Sirena-export-fixed.tab'
-parquet_tab_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_tab.parquet'
+RAW_DIR = r"C:\Users\Айдын\Универ\DS\Airlines-All\Airlines"
+PROCESS_DIR = r"C:\Users\Айдын\PycharmProjects\AirlinesProject\process"
 
-yaml_path = r'C:\Users\Vladislav\Desktop\Airlines\SkyTeam-Exchange.yaml'
-parquet_yaml_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_yaml.parquet'
+json_path = rf"{RAW_DIR}\FrequentFlyerForum-Profiles.json"
+tab_path = rf"{RAW_DIR}\Sirena-export-fixed.tab"
+yaml_path = rf"{RAW_DIR}\SkyTeam-Exchange.yaml"
+xml_path = rf"{RAW_DIR}\PointzAggregator-AirlinesData.xml"
+csv_path = rf"{RAW_DIR}\BoardingData.csv"
+pdf_path = rf"{RAW_DIR}\Skyteam_Timetable.pdf"
+zip_path = rf"{RAW_DIR}\YourBoardingPassDotAero.zip"
 
-xml_path = r'C:\Users\Vladislav\Desktop\Airlines\PointzAggregator-AirlinesData.xml'
-parquet_xml_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_xml.parquet'
+parquet_json_path = rf"{PROCESS_DIR}\clean_json.parquet"
+parquet_tab_path = rf"{PROCESS_DIR}\clean_tab.parquet"
+parquet_yaml_path = rf"{PROCESS_DIR}\clean_yaml.parquet"
+parquet_xml_path = rf"{PROCESS_DIR}\clean_xml.parquet"
+parquet_csv_path = rf"{PROCESS_DIR}\clean_csv.parquet"
+parquet_pdf_path = rf"{PROCESS_DIR}\clean_pdf.parquet"
+parquet_zip_path = rf"{PROCESS_DIR}\clean_zip.parquet"
 
-csv_path = r'C:\Users\Vladislav\Desktop\Airlines\BoardingData.csv'
-parquet_csv_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_csv.parquet'
+RUN_PARSERS = False
 
-pdf_path = r'C:\Users\Vladislav\Desktop\Airlines\Skyteam_Timetable.pdf'
-parquet_pdf_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_pdf.parquet'
 
-zip_path = r'C:\Users\Vladislav\Desktop\Airlines\YourBoardingPassDotAero.zip'
-parquet_zip_path = r'C:\Users\Vladislav\PycharmProjects\Parser\process\clean_zip.parquet'
+def run_parsers():
+    print("=== ЭТАП 1: Парсинг сырых файлов в Parquet ===")
+    parse_json(json_path, parquet_json_path)
+    parse_tab(tab_path, parquet_tab_path)
+    parse_yaml(yaml_path, parquet_yaml_path)
+    parse_xml(xml_path, parquet_xml_path)
+    parse_csv(csv_path, parquet_csv_path)
+    parse_pdf(pdf_path, parquet_pdf_path)
+    parse_boardingPass_zip(zip_path, parquet_zip_path)
+
+
+def dossier(df_with_ids, person_id):
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_width_chars=300):
+        print(df_with_ids.filter(pl.col("person_id") == person_id)
+              .sort("date", "dep_ts")
+              .select("source", "flight_code", "date", "dep_airport", "arr_airport", "dep_ts",
+                      "name_key", "birth_date", "passport", "ticket", "card_key", "nickname"))
+
 
 def main():
-    # Этап 1: Раскомментируйте при необходимости парсинг
-    # parse_json(json_path, parquet_json_path)
-    # parse_tab(tab_path, parquet_tab_path)
-    # parse_yaml(yaml_path, parquet_yaml_path)
-    # parse_xml(xml_path, parquet_xml_path)
-    # parse_csv(csv_path, parquet_csv_path)
-    # parse_boardingPass_zip(zip_path, parquet_zip_path)
+    if RUN_PARSERS:
+        run_parsers()
 
     print("\n=== ЭТАП 2: Унификация схем и сборка общей базы ===")
-    unified_raw_path = build_unified_file(
-        process_dir="process",
-        out_name="unified_raw.parquet"
-    )
-    print("\n=== ЭТАП 3: Entity Resolution (Назначение сквозных ID пассажиров) ===")
-    df_raw = pl.read_parquet(unified_raw_path)
-    df_with_ids = assign_person_id(df_raw)
-    print("\n=== ЭТАП 4: Слияние событий (Merge Events) в мастер-базу ===")
-    final_master = merge_events(df_with_ids)
-    final_output_path = r"C:\Users\Vladislav\PycharmProjects\Parser\process\unified_master.parquet"
-    final_master.write_parquet(final_output_path)
-    print(f"Готово! Финальная мастер-база сохранена: {final_output_path}")
-    print(f"Всего строк в unified_master: {len(final_master)}")
-    print("\n=== ДЕТЕКТИВНОЕ РАССЛЕДОВАНИЕ КОНКРЕТНОГО КОНФЛИКТА ===")
-    conflicted_row = final_master.filter(
-        pl.col("arr_conflict") | pl.col("dep_conflict")
-    ).sort("person_id").head(2)
-    if len(conflicted_row) > 0:
-        p_id = conflicted_row["person_id"][0]
-        f_code = conflicted_row["flight_code"][0]
-        f_date = conflicted_row["date"][0]
-        print(f"Ищем расхождения для Person ID: {p_id} на рейсе {f_code} ({f_date})")
-        raw_clash = df_with_ids.filter(
-            (pl.col("person_id") == p_id) &
-            (pl.col("flight_code") == f_code) &
-            (pl.col("date") == f_date)
-        ).select("source", "flight_code", "date", "dep_airport", "arr_airport", "booking_code", "ticket",
-                 "card_program", "card_number")
-        print("\nЧто по этому рейсу сообщали разные источники:")
-        with pl.Config(tbl_cols=-1, tbl_width_chars=200):
-            print(raw_clash)
-        print("\n=== ПОЛНОЕ ДОСЬЕ ПАССАЖИРА ===")
-        person_dossier = df_with_ids.filter(pl.col("person_id") == p_id)
-        if len(person_dossier) > 0:
-            print(f"Информация по Person ID: {p_id}")
-            with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_width_chars=300):
-                print(person_dossier.select(
-                    "source", "flight_code", "date", "dep_airport", "arr_airport",
-                    "name_key", "birth_date", "passport", "ticket", "card_program", "card_number",
-                ))
+    unified_raw_path = build_unified_file(process_dir=PROCESS_DIR, out_name="unified_raw.parquet")
 
+    print("\n=== ЭТАП 3: Достройка рейсов, сверка с PDF, person_id ===")
+    df = pl.read_parquet(unified_raw_path)
+    df = sd.fill_flight_reference(df)
+    pdf_parquet = pdf_schedule_path(PROCESS_DIR)
+    if pdf_parquet:
+        df = sd.enrich_and_validate_with_pdf(df, pdf_parquet)
+        print(df.group_by("pdf_status").len().sort("len", descending=True))
     else:
-        print("Конфликтов не обнаружено!")
-    export_suspicious_passengers(
-        df_with_ids,
-        output_prefix=r"C:\Users\Vladislav\PycharmProjects\Parser\process\suspicious_passengers_report"
-    )
-    names_inspection = (
-        df_with_ids.filter(pl.col("name_key").is_not_null())
-        .group_by("name_key")
-        .agg([
-            pl.col("person_id").n_unique().alias("unique_pids"),
-            pl.col("passport").drop_nulls().unique().implode().list.join(", ").alias("passports"),
-            pl.col("flight_code").count().alias("total_flights")
-        ])
-        .sort("name_key")
-    )
+        print("PDF-расписание не найдено, сверка пропущена")
+    df_with_ids = sd.assign_person_id(df)
+    df_with_ids.write_parquet(rf"{PROCESS_DIR}\unified_with_ids.parquet")
 
-    names_inspection.write_csv("names_inspection.csv")
-    print("Файл names_inspection.csv успешно создан!")
+    print("\n=== ЭТАП 4: Слияние событий (merge_events) ===")
+    final_master = merge_events(df_with_ids)
+    final_master.write_parquet(rf"{PROCESS_DIR}\unified_master.parquet")
+    print(f"Всего событий в unified_master: {len(final_master)}")
+
+    print("\n=== ЭТАП 5: Поиск подозрительных ===")
+    try:
+        info = sd.load_airport_info()
+    except ImportError:
+        info = None
+        print("airportsdata не установлен: проверки перемещений без часовых поясов")
+    events = sd.export_suspicious_passengers(
+        df_with_ids, output_prefix=rf"{PROCESS_DIR}\suspicious_spies", airport_info=info)
+
+    persons = pl.read_parquet(rf"{PROCESS_DIR}\suspicious_spies_persons.parquet")
+    print("\nТоп подозреваемых:")
+    with pl.Config(tbl_rows=25, tbl_cols=-1, tbl_width_chars=250, fmt_str_lengths=80):
+        print(persons.select("person_id", "score", "n_kinds", "kinds", "names", "passports").head(25))
+    if len(persons):
+        print("\nДосье первого в списке:")
+        dossier(df_with_ids, persons["person_id"][0])
 
 
 if __name__ == "__main__":

@@ -58,7 +58,6 @@ def parse_yaml(path, output_parquet_path, encoding="utf-8", batch_size=50_000):
 
                 for flight, info in flights.items():
                     try:
-                        # Защита от кривой структуры: если info не словарь, делаем его пустым
                         info = info if isinstance(info, dict) else {}
 
                         base = {
